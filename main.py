@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request
 
 
-app = FastAPI(title="Chatwoot Webhook Receiver", version="1.0.0")
+app = FastAPI(title="Webhook Hub API", version="1.0.0")
 
 
 @app.get("/health")
@@ -19,6 +19,8 @@ def _project_token(project: str) -> str | None:
 
 async def _handle_project_webhook(project: str, request: Request) -> dict:
     expected_token = _project_token(project)
+    if project == "novauniao_marketing" and not expected_token:
+        expected_token = os.getenv("WEBHOOK_TOKEN_CHATWOOT_NOVAUNIAO")
     if project == "chatwoot" and not expected_token:
         expected_token = os.getenv("CHATWOOT_WEBHOOK_TOKEN")
 
@@ -47,3 +49,9 @@ async def project_webhook(project: str, request: Request) -> dict:
 async def chatwoot_webhook(request: Request) -> dict:
     # Backward compatibility for existing Chatwoot URL.
     return await _handle_project_webhook("chatwoot", request)
+
+
+@app.post("/novauniao-marketing-webhook")
+async def novauniao_marketing_webhook(request: Request) -> dict:
+    # Convenience alias for this project.
+    return await _handle_project_webhook("novauniao_marketing", request)
