@@ -9,7 +9,7 @@ app = FastAPI(title="Chatwoot Webhook Receiver", version="1.0.0")
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "service": "chatwoot-webhook"}
+    return {"ok": True, "service": "fast-api-core"}
 
 
 def _project_token(project: str) -> str | None:
