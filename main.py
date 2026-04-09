@@ -36,6 +36,50 @@ def _extract_conversation_id(payload: dict[str, Any] | list[dict[str, Any]]) -> 
         return None
 
 
+def _extract_payload_body(payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+    raw_item: dict[str, Any]
+    if isinstance(payload, list):
+        raw_item = payload[0] if payload else {}
+    else:
+        raw_item = payload
+    return raw_item.get("body", raw_item) if isinstance(raw_item, dict) else {}
+
+
+def _extract_inbox_id(payload: dict[str, Any] | list[dict[str, Any]]) -> int | None:
+    body = _extract_payload_body(payload)
+    conversation = body.get("conversation") if isinstance(body, dict) else {}
+
+    candidate: Any = None
+    if isinstance(conversation, dict):
+        candidate = conversation.get("inbox_id")
+        if candidate is None:
+            inbox_obj = conversation.get("inbox")
+            if isinstance(inbox_obj, dict):
+                candidate = inbox_obj.get("id")
+    if candidate is None and isinstance(body, dict):
+        candidate = body.get("inbox_id")
+    try:
+        return int(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def _garcom_allowed_inbox_ids() -> set[int]:
+    raw = _get_env("GARCOM_ALLOWED_INBOX_IDS")
+    if not raw:
+        return set()
+    parsed: set[int] = set()
+    for item in raw.split(","):
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            parsed.add(int(text))
+        except ValueError:
+            continue
+    return parsed
+
+
 def _celery_broker_url() -> str:
     # Dedicated broker for garcom can be set explicitly; fallback to shared REDIS_URL.
     broker = _get_env("GARCOM_CELERY_BROKER_URL")
@@ -112,6 +156,17 @@ async def _handle_project_webhook(project: str, request: Request) -> dict:
     payload = await request.json()
     request_trace_id = request.headers.get("x-trace-id") or request.headers.get("x-request-id")
     if project in {"garcom_digital", "garcom-digital", "garcom"}:
+        inbox_id = _extract_inbox_id(payload)
+        allowed_inboxes = _garcom_allowed_inbox_ids()
+        if allowed_inboxes and (inbox_id is None or inbox_id not in allowed_inboxes):
+            return {
+                "ok": True,
+                "ignored": True,
+                "project": "garcom_digital",
+                "reason": "inbox_not_allowed",
+                "inbox_id": inbox_id,
+                "allowed_inbox_ids": sorted(allowed_inboxes),
+            }
         return _enqueue_garcom_task(
             payload=payload,
             webhook_id=request.query_params.get("webhook_id"),
