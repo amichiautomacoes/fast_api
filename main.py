@@ -1,135 +1,10 @@
 import os
-import secrets
 from datetime import datetime, timezone
-from typing import Any
 
-from celery import Celery
 from fastapi import FastAPI, HTTPException, Request
 
 
 app = FastAPI(title="Webhook Hub API", version="1.0.0")
-
-
-def _get_env(name: str, default: str = "") -> str:
-    return str(os.getenv(name, default)).strip()
-
-
-def _new_trace_id() -> str:
-    return f"wf-{secrets.token_hex(8)}"
-
-
-def _extract_conversation_id(payload: dict[str, Any] | list[dict[str, Any]]) -> int | None:
-    raw_item: dict[str, Any]
-    if isinstance(payload, list):
-        raw_item = payload[0] if payload else {}
-    else:
-        raw_item = payload
-    body = raw_item.get("body", raw_item) if isinstance(raw_item, dict) else {}
-    conversation = body.get("conversation") if isinstance(body, dict) else {}
-    if isinstance(conversation, dict):
-        conversation_id = conversation.get("id")
-    else:
-        conversation_id = body.get("conversation_id")
-    try:
-        return int(conversation_id)
-    except (TypeError, ValueError):
-        return None
-
-
-def _extract_payload_body(payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
-    raw_item: dict[str, Any]
-    if isinstance(payload, list):
-        raw_item = payload[0] if payload else {}
-    else:
-        raw_item = payload
-    return raw_item.get("body", raw_item) if isinstance(raw_item, dict) else {}
-
-
-def _extract_inbox_id(payload: dict[str, Any] | list[dict[str, Any]]) -> int | None:
-    body = _extract_payload_body(payload)
-    conversation = body.get("conversation") if isinstance(body, dict) else {}
-
-    candidate: Any = None
-    if isinstance(conversation, dict):
-        candidate = conversation.get("inbox_id")
-        if candidate is None:
-            inbox_obj = conversation.get("inbox")
-            if isinstance(inbox_obj, dict):
-                candidate = inbox_obj.get("id")
-    if candidate is None and isinstance(body, dict):
-        candidate = body.get("inbox_id")
-    try:
-        return int(candidate)
-    except (TypeError, ValueError):
-        return None
-
-
-def _garcom_allowed_inbox_ids() -> set[int]:
-    raw = _get_env("GARCOM_ALLOWED_INBOX_IDS")
-    if not raw:
-        return set()
-    parsed: set[int] = set()
-    for item in raw.split(","):
-        text = str(item).strip()
-        if not text:
-            continue
-        try:
-            parsed.add(int(text))
-        except ValueError:
-            continue
-    return parsed
-
-
-def _celery_broker_url() -> str:
-    # Dedicated broker for garcom can be set explicitly; fallback to shared REDIS_URL.
-    broker = _get_env("GARCOM_CELERY_BROKER_URL")
-    if broker:
-        return broker
-    return _get_env("REDIS_URL")
-
-
-def _celery_backend_url() -> str:
-    backend = _get_env("GARCOM_CELERY_RESULT_BACKEND")
-    if backend:
-        return backend
-    return _celery_broker_url()
-
-
-def _enqueue_garcom_task(
-    *,
-    payload: dict[str, Any] | list[dict[str, Any]],
-    webhook_id: str | None,
-    request_trace_id: str | None,
-) -> dict[str, Any]:
-    broker_url = _celery_broker_url()
-    if not broker_url:
-        raise HTTPException(status_code=500, detail="GARCOM_CELERY_BROKER_URL/REDIS_URL not configured")
-
-    trace_id = str(request_trace_id or "").strip() or _new_trace_id()
-    conversation_id = _extract_conversation_id(payload)
-
-    celery_app = Celery(
-        "webhook_hub",
-        broker=broker_url,
-        backend=_celery_backend_url(),
-    )
-    celery_app.send_task(
-        "runner.tasks.process_webhook_payload_task",
-        kwargs={
-            "payload": payload,
-            "trace_id": trace_id,
-            "webhook_id": webhook_id,
-            "conversation_id": conversation_id,
-        },
-    )
-    return {
-        "status": "queued",
-        "trace_id": trace_id,
-        "reason": None,
-        "data": {"queued": True},
-        "webhook_id": webhook_id,
-        "project": "garcom_digital",
-    }
 
 
 @app.get("/health")
@@ -139,40 +14,24 @@ async def health() -> dict:
 
 def _project_token(project: str) -> str | None:
     key = f"WEBHOOK_TOKEN_{project.upper().replace('-', '_')}"
-    return os.getenv(key)
+    value = os.getenv(key)
+    return value.strip() if value else None
 
 
 async def _handle_project_webhook(project: str, request: Request) -> dict:
     expected_token = _project_token(project)
-    if project == "novauniao_marketing" and not expected_token:
-        expected_token = os.getenv("WEBHOOK_TOKEN_CHATWOOT_NOVAUNIAO")
-    if project == "chatwoot" and not expected_token:
-        expected_token = os.getenv("CHATWOOT_WEBHOOK_TOKEN")
+    if not expected_token:
+        expected_env = f"WEBHOOK_TOKEN_{project.upper().replace('-', '_')}"
+        raise HTTPException(
+            status_code=500,
+            detail=f"Token not configured for project '{project}'. Expected env: {expected_env}",
+        )
 
     sent_token = request.query_params.get("token")
-    if expected_token and sent_token != expected_token:
+    if sent_token != expected_token:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     payload = await request.json()
-    request_trace_id = request.headers.get("x-trace-id") or request.headers.get("x-request-id")
-    if project in {"garcom_digital", "garcom-digital", "garcom"}:
-        inbox_id = _extract_inbox_id(payload)
-        allowed_inboxes = _garcom_allowed_inbox_ids()
-        if allowed_inboxes and (inbox_id is None or inbox_id not in allowed_inboxes):
-            return {
-                "ok": True,
-                "ignored": True,
-                "project": "garcom_digital",
-                "reason": "inbox_not_allowed",
-                "inbox_id": inbox_id,
-                "allowed_inbox_ids": sorted(allowed_inboxes),
-            }
-        return _enqueue_garcom_task(
-            payload=payload,
-            webhook_id=request.query_params.get("webhook_id"),
-            request_trace_id=request_trace_id,
-        )
-
     event = payload.get("event")
     conversation = payload.get("conversation") or {}
     conversation_id = conversation.get("id")
@@ -199,9 +58,3 @@ async def chatwoot_webhook(request: Request) -> dict:
 async def novauniao_marketing_webhook(request: Request) -> dict:
     # Convenience alias for this project.
     return await _handle_project_webhook("novauniao_marketing", request)
-
-
-@app.post("/garcom-digital-webhook")
-async def garcom_digital_webhook(request: Request) -> dict:
-    # Convenience alias for this project.
-    return await _handle_project_webhook("garcom_digital", request)
