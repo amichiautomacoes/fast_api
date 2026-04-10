@@ -10,18 +10,15 @@ import redis
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+GARCOM_PROJECT = "garcom_digital"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _project_env_name(project: str) -> str:
-    return f"WEBHOOK_TOKEN_{project.upper().replace('-', '_')}"
-
-
-def _project_token(project: str) -> str | None:
-    value = os.getenv(_project_env_name(project))
-    return value.strip() if value else None
+def _garcom_token() -> str:
+    return (os.getenv("WEBHOOK_TOKEN_GARCOM_DIGITAL") or "").strip()
 
 
 def _new_id(prefix: str) -> str:
@@ -37,12 +34,8 @@ def _event_maxlen() -> int:
         return 1000
 
 
-def _forward_url_env_name(project: str) -> str:
-    return f"FORWARD_WEBHOOK_URL_{project.upper().replace('-', '_')}"
-
-
-def _forward_webhook_url(project: str) -> str:
-    value = os.getenv(_forward_url_env_name(project))
+def _forward_webhook_url() -> str:
+    value = os.getenv("FORWARD_WEBHOOK_URL_GARCOM_DIGITAL")
     return value.strip() if value else ""
 
 
@@ -54,8 +47,8 @@ def _forward_timeout_seconds() -> float:
         return 10.0
 
 
-def _forward_webhook_payload(project: str, payload: dict[str, Any], webhook_id: str) -> dict[str, Any]:
-    forward_url = _forward_webhook_url(project)
+def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[str, Any]:
+    forward_url = _forward_webhook_url()
     if not forward_url:
         return {"attempted": False, "ok": False, "reason": "forward_not_configured", "status_code": None}
 
@@ -94,6 +87,18 @@ def _forward_webhook_payload(project: str, payload: dict[str, Any], webhook_id: 
             "response_body": "",
             "reason": f"forward_exception:{exc.__class__.__name__}",
         }
+
+
+def _require_garcom_token(request: Request) -> None:
+    expected_token = _garcom_token()
+    if not expected_token:
+        raise HTTPException(
+            status_code=500,
+            detail="Token not configured. Expected env: WEBHOOK_TOKEN_GARCOM_DIGITAL",
+        )
+    sent_token = (request.query_params.get("token") or "").strip()
+    if sent_token != expected_token:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 class MessageCreate(BaseModel):
@@ -182,19 +187,9 @@ def _write_message(client: redis.Redis, doc: dict[str, Any], *, index_score: flo
     pipe.execute()
 
 
-@app.post("/webhooks/{project}")
-async def project_webhook(project: str, request: Request) -> dict[str, Any]:
-    expected_token = _project_token(project)
-    if not expected_token:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Token not configured for project '{project}'. Expected env: {_project_env_name(project)}",
-        )
-
-    sent_token = request.query_params.get("token")
-    if sent_token != expected_token:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
+@app.post("/webhooks/garcom_digital")
+async def garcom_webhook(request: Request) -> dict[str, Any]:
+    _require_garcom_token(request)
     payload = await request.json()
     event = payload.get("event")
     conversation = payload.get("conversation") or {}
@@ -202,15 +197,15 @@ async def project_webhook(project: str, request: Request) -> dict[str, Any]:
     webhook_id = _new_id("whk")
 
     print(
-        f"[{_now_iso()}] project={project} webhook_id={webhook_id} event={event} conversation_id={conversation_id}"
+        f"[{_now_iso()}] project={GARCOM_PROJECT} webhook_id={webhook_id} event={event} conversation_id={conversation_id}"
     )
 
     client = getattr(request.app.state, "redis", None)
     if client:
-        key = f"wh:webhooks:{project}"
+        key = f"wh:webhooks:{GARCOM_PROJECT}"
         event_doc = {
             "id": webhook_id,
-            "project": project,
+            "project": GARCOM_PROJECT,
             "event": event,
             "conversation_id": conversation_id,
             "received_at": _now_iso(),
@@ -221,13 +216,18 @@ async def project_webhook(project: str, request: Request) -> dict[str, Any]:
         pipe.ltrim(key, 0, _event_maxlen() - 1)
         pipe.execute()
 
-    forward_result = _forward_webhook_payload(project, payload, webhook_id)
+    forward_result = _forward_webhook_payload(payload, webhook_id)
     return {
         "ok": True,
         "webhook_id": webhook_id,
-        "project": project,
+        "project": GARCOM_PROJECT,
         "forward": forward_result,
     }
+
+
+@app.post("/webhook")
+async def garcom_webhook_alias(request: Request) -> dict[str, Any]:
+    return await garcom_webhook(request)
 
 
 @app.post("/messages")
@@ -311,11 +311,3 @@ async def delete_message(message_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "deleted_id": message_id}
 
 
-@app.post("/chatwoot-webhook")
-async def chatwoot_webhook(request: Request) -> dict[str, Any]:
-    return await project_webhook("chatwoot", request)
-
-
-@app.post("/novauniao-marketing-webhook")
-async def novauniao_marketing_webhook(request: Request) -> dict[str, Any]:
-    return await project_webhook("novauniao_marketing", request)
