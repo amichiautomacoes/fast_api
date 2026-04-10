@@ -43,6 +43,18 @@ def _forward_timeout_seconds() -> float:
         return 10.0
 
 
+def _chatwoot_base_url() -> str:
+    return (os.getenv("CHATWOOT_BASE_URL") or "").rstrip("/")
+
+
+def _chatwoot_account_id() -> str:
+    return (os.getenv("CHATWOOT_ACCOUNT_ID") or "").strip()
+
+
+def _chatwoot_api_access_token() -> str:
+    return (os.getenv("CHATWOOT_API_ACCESS_TOKEN") or "").strip()
+
+
 def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[str, Any]:
     forward_url = _forward_webhook_url()
     if not forward_url:
@@ -88,6 +100,51 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
         }
 
 
+def _send_outgoing_to_chatwoot(*, conversation_id: int, content: str) -> dict[str, Any]:
+    base_url = _chatwoot_base_url()
+    account_id = _chatwoot_account_id()
+    api_token = _chatwoot_api_access_token()
+    if not (base_url and account_id and api_token):
+        return {"attempted": False, "ok": False, "reason": "chatwoot_not_configured", "status_code": None}
+
+    url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{int(conversation_id)}/messages"
+    payload = {"content": content, "message_type": "outgoing", "private": False}
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "api_access_token": api_token},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=10.0) as resp:
+            response_body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "attempted": True,
+                "ok": 200 <= int(resp.status) < 300,
+                "status_code": int(resp.status),
+                "response_body": response_body[:1000],
+                "reason": None,
+            }
+    except urlerror.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": int(exc.code),
+            "response_body": body_text[:1000],
+            "reason": "chatwoot_http_error",
+        }
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": None,
+            "response_body": "",
+            "reason": f"chatwoot_exception:{exc.__class__.__name__}",
+        }
+
+
 class MessageCreate(BaseModel):
     project: str = Field(..., min_length=1, max_length=120)
     to: str = Field(..., min_length=1, max_length=120)
@@ -108,6 +165,13 @@ class MessagePatch(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=4000)
     status: str | None = Field(default=None, min_length=1, max_length=40)
     metadata: dict[str, Any] | None = None
+
+
+class ChatwootOutgoing(BaseModel):
+    conversation_id: int = Field(..., ge=1)
+    content: str = Field(..., min_length=1, max_length=4000)
+    trace_id: str | None = Field(default=None, max_length=128)
+    webhook_id: str | None = Field(default=None, max_length=128)
 
 
 app = FastAPI(title="Webhook Hub API", version="2.0.0")
@@ -214,6 +278,20 @@ async def garcom_webhook(request: Request) -> dict[str, Any]:
 @app.post("/webhook")
 async def garcom_webhook_alias(request: Request) -> dict[str, Any]:
     return await garcom_webhook(request)
+
+
+@app.post("/bridge/chatwoot/outgoing")
+async def bridge_chatwoot_outgoing(body: ChatwootOutgoing) -> dict[str, Any]:
+    result = _send_outgoing_to_chatwoot(
+        conversation_id=int(body.conversation_id),
+        content=body.content,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "trace_id": body.trace_id,
+        "webhook_id": body.webhook_id,
+        "chatwoot": result,
+    }
 
 
 @app.post("/messages")
