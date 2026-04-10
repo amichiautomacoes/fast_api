@@ -3,6 +3,8 @@ import os
 import secrets
 from datetime import datetime, timezone
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import redis
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -33,6 +35,65 @@ def _event_maxlen() -> int:
         return max(parsed, 1)
     except ValueError:
         return 1000
+
+
+def _forward_url_env_name(project: str) -> str:
+    return f"FORWARD_WEBHOOK_URL_{project.upper().replace('-', '_')}"
+
+
+def _forward_webhook_url(project: str) -> str:
+    value = os.getenv(_forward_url_env_name(project))
+    return value.strip() if value else ""
+
+
+def _forward_timeout_seconds() -> float:
+    raw = os.getenv("FORWARD_WEBHOOK_TIMEOUT_SECONDS", "10").strip()
+    try:
+        return max(float(raw), 1.0)
+    except ValueError:
+        return 10.0
+
+
+def _forward_webhook_payload(project: str, payload: dict[str, Any], webhook_id: str) -> dict[str, Any]:
+    forward_url = _forward_webhook_url(project)
+    if not forward_url:
+        return {"attempted": False, "ok": False, "reason": "forward_not_configured", "status_code": None}
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urlrequest.Request(
+        forward_url,
+        data=body,
+        headers={"Content-Type": "application/json", "X-Source-Webhook-Id": webhook_id},
+        method="POST",
+    )
+    timeout = _forward_timeout_seconds()
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            response_body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "attempted": True,
+                "ok": 200 <= int(resp.status) < 300,
+                "status_code": int(resp.status),
+                "response_body": response_body[:1000],
+                "reason": None,
+            }
+    except urlerror.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": int(exc.code),
+            "response_body": body_text[:1000],
+            "reason": "forward_http_error",
+        }
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": None,
+            "response_body": "",
+            "reason": f"forward_exception:{exc.__class__.__name__}",
+        }
 
 
 class MessageCreate(BaseModel):
@@ -160,7 +221,13 @@ async def project_webhook(project: str, request: Request) -> dict[str, Any]:
         pipe.ltrim(key, 0, _event_maxlen() - 1)
         pipe.execute()
 
-    return {"ok": True, "webhook_id": webhook_id, "project": project}
+    forward_result = _forward_webhook_payload(project, payload, webhook_id)
+    return {
+        "ok": True,
+        "webhook_id": webhook_id,
+        "project": project,
+        "forward": forward_result,
+    }
 
 
 @app.post("/messages")
