@@ -17,10 +17,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _garcom_token() -> str:
-    return (os.getenv("WEBHOOK_TOKEN_GARCOM_DIGITAL") or "").strip()
-
-
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
 
@@ -39,11 +35,6 @@ def _forward_webhook_url() -> str:
     return value.strip() if value else ""
 
 
-def _forward_gateway_token() -> str:
-    value = os.getenv("FORWARD_GATEWAY_TOKEN_GARCOM_DIGITAL") or os.getenv("WEBHOOK_GATEWAY_TOKEN")
-    return value.strip() if value else ""
-
-
 def _forward_timeout_seconds() -> float:
     raw = os.getenv("FORWARD_WEBHOOK_TIMEOUT_SECONDS", "10").strip()
     try:
@@ -57,10 +48,6 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
     if not forward_url:
         return {"attempted": False, "ok": False, "reason": "forward_not_configured", "status_code": None}
 
-    gateway_token = _forward_gateway_token()
-    if not gateway_token:
-        return {"attempted": False, "ok": False, "reason": "gateway_token_not_configured", "status_code": None}
-
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urlrequest.Request(
         forward_url,
@@ -68,7 +55,6 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
         headers={
             "Content-Type": "application/json",
             "X-Source-Webhook-Id": webhook_id,
-            "X-Gateway-Token": gateway_token,
         },
         method="POST",
     )
@@ -100,18 +86,6 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
             "response_body": "",
             "reason": f"forward_exception:{exc.__class__.__name__}",
         }
-
-
-def _require_garcom_token(request: Request) -> None:
-    expected_token = _garcom_token()
-    if not expected_token:
-        raise HTTPException(
-            status_code=500,
-            detail="Token not configured. Expected env: WEBHOOK_TOKEN_GARCOM_DIGITAL",
-        )
-    sent_token = (request.query_params.get("token") or "").strip()
-    if sent_token != expected_token:
-        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 class MessageCreate(BaseModel):
@@ -202,7 +176,6 @@ def _write_message(client: redis.Redis, doc: dict[str, Any], *, index_score: flo
 
 @app.post("/webhooks/garcom_digital")
 async def garcom_webhook(request: Request) -> dict[str, Any]:
-    _require_garcom_token(request)
     payload = await request.json()
     event = payload.get("event")
     conversation = payload.get("conversation") or {}
