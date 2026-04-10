@@ -145,6 +145,29 @@ def _send_outgoing_to_chatwoot(*, conversation_id: int, content: str) -> dict[st
         }
 
 
+def _should_skip_webhook_forward(payload: dict[str, Any]) -> tuple[bool, str | None]:
+    event_name = str(payload.get("event") or "").strip().lower()
+    if event_name != "message_created":
+        return False, None
+
+    message_obj = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    message_type = str(payload.get("message_type") or message_obj.get("message_type") or "").strip().lower()
+    if message_type == "outgoing":
+        return True, "outgoing_message"
+
+    sender_obj = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+    sender_type = str(
+        sender_obj.get("type")
+        or sender_obj.get("sender_type")
+        or payload.get("sender_type")
+        or ""
+    ).strip().lower()
+    if sender_type in {"agent", "bot"}:
+        return True, "agent_or_bot_message"
+
+    return False, None
+
+
 class MessageCreate(BaseModel):
     project: str = Field(..., min_length=1, max_length=120)
     to: str = Field(..., min_length=1, max_length=120)
@@ -245,10 +268,21 @@ async def garcom_webhook(request: Request) -> dict[str, Any]:
     conversation = payload.get("conversation") or {}
     conversation_id = conversation.get("id")
     webhook_id = _new_id("whk")
+    skip_forward, skip_reason = _should_skip_webhook_forward(payload)
 
     print(
         f"[{_now_iso()}] project={GARCOM_PROJECT} webhook_id={webhook_id} event={event} conversation_id={conversation_id}"
     )
+
+    if skip_forward:
+        return {
+            "ok": True,
+            "webhook_id": webhook_id,
+            "project": GARCOM_PROJECT,
+            "skipped": True,
+            "reason": skip_reason,
+            "forward": {"attempted": False, "ok": False, "reason": skip_reason, "status_code": None},
+        }
 
     client = getattr(request.app.state, "redis", None)
     if client:

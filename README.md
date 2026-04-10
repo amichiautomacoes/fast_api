@@ -44,6 +44,7 @@ Mensagens (CRUD completo):
 - Para escalar em muitos workers, use `REDIS_URL` (estado compartilhado).
 - Sem Redis, apenas webhook funciona; endpoints de mensagens retornam `503`.
 - Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino.
+- Eventos `message_created` com `message_type=outgoing` (ou sender `agent/bot`) sao ignorados para evitar loop de webhook.
 - O fluxo recomendado fica:
   - `Chatwoot -> fast_api -> garcom_digital` (entrada de mensagem)
   - `garcom_digital -> fast_api -> Chatwoot` (saida de mensagem)
