@@ -39,6 +39,11 @@ def _forward_webhook_url() -> str:
     return value.strip() if value else ""
 
 
+def _forward_gateway_token() -> str:
+    value = os.getenv("FORWARD_GATEWAY_TOKEN_GARCOM_DIGITAL") or os.getenv("WEBHOOK_GATEWAY_TOKEN")
+    return value.strip() if value else ""
+
+
 def _forward_timeout_seconds() -> float:
     raw = os.getenv("FORWARD_WEBHOOK_TIMEOUT_SECONDS", "10").strip()
     try:
@@ -52,11 +57,19 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
     if not forward_url:
         return {"attempted": False, "ok": False, "reason": "forward_not_configured", "status_code": None}
 
+    gateway_token = _forward_gateway_token()
+    if not gateway_token:
+        return {"attempted": False, "ok": False, "reason": "gateway_token_not_configured", "status_code": None}
+
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urlrequest.Request(
         forward_url,
         data=body,
-        headers={"Content-Type": "application/json", "X-Source-Webhook-Id": webhook_id},
+        headers={
+            "Content-Type": "application/json",
+            "X-Source-Webhook-Id": webhook_id,
+            "X-Gateway-Token": gateway_token,
+        },
         method="POST",
     )
     timeout = _forward_timeout_seconds()
