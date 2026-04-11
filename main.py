@@ -55,6 +55,14 @@ def _chatwoot_api_access_token() -> str:
     return (os.getenv("CHATWOOT_API_ACCESS_TOKEN") or "").strip()
 
 
+def _evolution_base_url() -> str:
+    return (os.getenv("EVOLUTION_BASE_URL") or "").rstrip("/")
+
+
+def _evolution_api_key() -> str:
+    return (os.getenv("EVOLUTION_API_KEY") or "").strip()
+
+
 def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[str, Any]:
     forward_url = _forward_webhook_url()
     if not forward_url:
@@ -97,6 +105,72 @@ def _forward_webhook_payload(payload: dict[str, Any], webhook_id: str) -> dict[s
             "status_code": None,
             "response_body": "",
             "reason": f"forward_exception:{exc.__class__.__name__}",
+        }
+
+
+def _send_outgoing_to_evolution(
+    *,
+    instance: str,
+    number: str,
+    content: str,
+    delay: int | None = None,
+    link_preview: bool | None = None,
+    quoted: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base_url = _evolution_base_url()
+    api_key = _evolution_api_key()
+    if not (base_url and api_key):
+        return {"attempted": False, "ok": False, "reason": "evolution_not_configured", "status_code": None}
+    if not instance.strip():
+        return {"attempted": False, "ok": False, "reason": "evolution_instance_missing", "status_code": None}
+    if not number.strip():
+        return {"attempted": False, "ok": False, "reason": "evolution_number_missing", "status_code": None}
+
+    url = f"{base_url}/message/sendText/{instance.strip()}"
+    payload: dict[str, Any] = {
+        "number": number.strip(),
+        "text": content,
+    }
+    if delay is not None:
+        payload["delay"] = int(delay)
+    if link_preview is not None:
+        payload["linkPreview"] = bool(link_preview)
+    if quoted:
+        payload["quoted"] = quoted
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "apikey": api_key},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=10.0) as resp:
+            response_body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "attempted": True,
+                "ok": 200 <= int(resp.status) < 300,
+                "status_code": int(resp.status),
+                "response_body": response_body[:1000],
+                "reason": None,
+            }
+    except urlerror.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": int(exc.code),
+            "response_body": body_text[:1000],
+            "reason": "evolution_http_error",
+        }
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "status_code": None,
+            "response_body": "",
+            "reason": f"evolution_exception:{exc.__class__.__name__}",
         }
 
 
@@ -146,24 +220,53 @@ def _send_outgoing_to_chatwoot(*, conversation_id: int, content: str) -> dict[st
 
 
 def _should_skip_webhook_forward(payload: dict[str, Any]) -> tuple[bool, str | None]:
-    event_name = str(payload.get("event") or "").strip().lower()
-    if event_name != "message_created":
+    def _first_string(*values: Any) -> str:
+        for value in values:
+            txt = str(value or "").strip().lower()
+            if txt:
+                return txt
+        return ""
+
+    def _is_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        txt = str(value or "").strip().lower()
+        return txt in {"1", "true", "yes", "y", "fromme", "from_me"}
+
+    event_name = _first_string(payload.get("event"), payload.get("event_type"), payload.get("type"))
+    if event_name and event_name not in {"message_created", "messages_upsert", "send_message", "message"}:
         return False, None
 
     message_obj = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-    message_type = str(payload.get("message_type") or message_obj.get("message_type") or "").strip().lower()
-    if message_type == "outgoing":
+    data_obj = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+
+    message_type = _first_string(
+        payload.get("message_type"),
+        message_obj.get("message_type"),
+        data_obj.get("message_type"),
+    )
+    if message_type in {"outgoing", "sent", "agent", "bot"}:
         return True, "outgoing_message"
 
     sender_obj = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
-    sender_type = str(
-        sender_obj.get("type")
-        or sender_obj.get("sender_type")
-        or payload.get("sender_type")
-        or ""
-    ).strip().lower()
-    if sender_type in {"agent", "bot"}:
+    sender_type = _first_string(
+        sender_obj.get("type"),
+        sender_obj.get("sender_type"),
+        payload.get("sender_type"),
+        data_obj.get("sender_type"),
+    )
+    if sender_type in {"agent", "bot", "outgoing"}:
         return True, "agent_or_bot_message"
+
+    if _is_truthy(payload.get("fromMe") or payload.get("from_me") or data_obj.get("fromMe") or data_obj.get("from_me")):
+        return True, "from_me_message"
+
+    key_obj = payload.get("key") if isinstance(payload.get("key"), dict) else {}
+    data_key_obj = data_obj.get("key") if isinstance(data_obj.get("key"), dict) else {}
+    if _is_truthy(key_obj.get("fromMe") or key_obj.get("from_me") or data_key_obj.get("fromMe") or data_key_obj.get("from_me")):
+        return True, "from_me_message"
 
     return False, None
 
@@ -193,6 +296,16 @@ class MessagePatch(BaseModel):
 class ChatwootOutgoing(BaseModel):
     conversation_id: int = Field(..., ge=1)
     content: str = Field(..., min_length=1, max_length=4000)
+    trace_id: str | None = Field(default=None, max_length=128)
+    webhook_id: str | None = Field(default=None, max_length=128)
+
+
+class EvolutionOutgoing(BaseModel):
+    instance: str = Field(..., min_length=1, max_length=120)
+    number: str = Field(..., min_length=1, max_length=120)
+    content: str = Field(..., min_length=1, max_length=4000)
+    delay: int | None = Field(default=None, ge=0, le=60000)
+    link_preview: bool | None = None
     trace_id: str | None = Field(default=None, max_length=128)
     webhook_id: str | None = Field(default=None, max_length=128)
 
@@ -261,17 +374,20 @@ def _write_message(client: redis.Redis, doc: dict[str, Any], *, index_score: flo
     pipe.execute()
 
 
-@app.post("/webhooks/garcom_digital")
-async def garcom_webhook(request: Request) -> dict[str, Any]:
-    payload = await request.json()
+def _handle_inbound_payload(
+    *,
+    payload: dict[str, Any],
+    request: Request,
+    webhook_id: str,
+    source: str | None = None,
+) -> dict[str, Any]:
     event = payload.get("event")
     conversation = payload.get("conversation") or {}
     conversation_id = conversation.get("id")
-    webhook_id = _new_id("whk")
     skip_forward, skip_reason = _should_skip_webhook_forward(payload)
 
     print(
-        f"[{_now_iso()}] project={GARCOM_PROJECT} webhook_id={webhook_id} event={event} conversation_id={conversation_id}"
+        f"[{_now_iso()}] project={GARCOM_PROJECT} source={source or 'auto'} webhook_id={webhook_id} event={event} conversation_id={conversation_id}"
     )
 
     if skip_forward:
@@ -305,8 +421,33 @@ async def garcom_webhook(request: Request) -> dict[str, Any]:
         "ok": True,
         "webhook_id": webhook_id,
         "project": GARCOM_PROJECT,
+        "source": source or "auto",
         "forward": forward_result,
     }
+
+
+@app.post("/bridge/inbound")
+async def bridge_inbound(request: Request, source: str = Query(default="auto")) -> dict[str, Any]:
+    payload = await request.json()
+    webhook_id = _new_id("whk")
+    return _handle_inbound_payload(
+        payload=payload,
+        request=request,
+        webhook_id=webhook_id,
+        source=source,
+    )
+
+
+@app.post("/webhooks/garcom_digital")
+async def garcom_webhook(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    webhook_id = _new_id("whk")
+    return _handle_inbound_payload(
+        payload=payload,
+        request=request,
+        webhook_id=webhook_id,
+        source="garcom_digital",
+    )
 
 
 @app.post("/webhook")
@@ -314,18 +455,109 @@ async def garcom_webhook_alias(request: Request) -> dict[str, Any]:
     return await garcom_webhook(request)
 
 
+@app.post("/webhook/chatwoot")
+async def chatwoot_webhook(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    webhook_id = _new_id("whk")
+    return _handle_inbound_payload(
+        payload=payload,
+        request=request,
+        webhook_id=webhook_id,
+        source="chatwoot",
+    )
+
+
+@app.post("/webhook/evolution")
+async def evolution_webhook(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    webhook_id = _new_id("whk")
+    return _handle_inbound_payload(
+        payload=payload,
+        request=request,
+        webhook_id=webhook_id,
+        source="evolution",
+    )
+
+
+@app.post("/bridge/outgoing")
+async def bridge_outgoing(body: dict[str, Any]) -> dict[str, Any]:
+    destination = str(body.get("destination") or "chatwoot").strip().lower()
+    content = str(body.get("content") or "").strip()
+    trace_id = body.get("trace_id")
+    webhook_id = body.get("webhook_id")
+
+    if not content:
+        raise HTTPException(status_code=422, detail="content is required")
+
+    if destination == "chatwoot":
+        conversation_id = body.get("conversation_id")
+        if conversation_id is None:
+            raise HTTPException(status_code=422, detail="conversation_id is required for chatwoot outbound")
+        result = _send_outgoing_to_chatwoot(
+            conversation_id=int(conversation_id),
+            content=content,
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "destination": "chatwoot",
+            "trace_id": trace_id,
+            "webhook_id": webhook_id,
+            "chatwoot": result,
+        }
+
+    if destination == "evolution":
+        instance = str(body.get("instance") or "").strip()
+        number = str(body.get("number") or "").strip()
+        if not instance:
+            raise HTTPException(status_code=422, detail="instance is required for evolution outbound")
+        if not number:
+            raise HTTPException(status_code=422, detail="number is required for evolution outbound")
+        result = _send_outgoing_to_evolution(
+            instance=instance,
+            number=number,
+            content=content,
+            delay=body.get("delay"),
+            link_preview=body.get("link_preview"),
+            quoted=body.get("quoted") if isinstance(body.get("quoted"), dict) else None,
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "destination": "evolution",
+            "trace_id": trace_id,
+            "webhook_id": webhook_id,
+            "evolution": result,
+        }
+
+    raise HTTPException(status_code=422, detail="destination must be 'chatwoot' or 'evolution'")
+
+
 @app.post("/bridge/chatwoot/outgoing")
 async def bridge_chatwoot_outgoing(body: ChatwootOutgoing) -> dict[str, Any]:
-    result = _send_outgoing_to_chatwoot(
-        conversation_id=int(body.conversation_id),
-        content=body.content,
+    return await bridge_outgoing(
+        {
+            "destination": "chatwoot",
+            "conversation_id": body.conversation_id,
+            "content": body.content,
+            "trace_id": body.trace_id,
+            "webhook_id": body.webhook_id,
+        }
     )
-    return {
-        "ok": bool(result.get("ok")),
-        "trace_id": body.trace_id,
-        "webhook_id": body.webhook_id,
-        "chatwoot": result,
-    }
+
+
+@app.post("/bridge/evolution/outgoing")
+async def bridge_evolution_outgoing(body: EvolutionOutgoing) -> dict[str, Any]:
+    return await bridge_outgoing(
+        {
+            "destination": "evolution",
+            "instance": body.instance,
+            "number": body.number,
+            "content": body.content,
+            "delay": body.delay,
+            "link_preview": body.link_preview,
+            "trace_id": body.trace_id,
+            "webhook_id": body.webhook_id,
+        }
+    )
 
 
 @app.post("/messages")

@@ -14,6 +14,8 @@ API central para webhooks e mensagens, preparada para EasyPanel e dedicada ao `g
 - `CHATWOOT_BASE_URL` (obrigatoria para outbound)
 - `CHATWOOT_ACCOUNT_ID` (obrigatoria para outbound)
 - `CHATWOOT_API_ACCESS_TOKEN` (obrigatoria para outbound)
+- `EVOLUTION_BASE_URL` (obrigatoria para outbound Evolution)
+- `EVOLUTION_API_KEY` (obrigatoria para outbound Evolution)
 
 Exemplo:
 
@@ -26,9 +28,14 @@ Exemplo:
 
 - `GET /` status basico do servico
 - `GET /health` health check + status do Redis
+- `POST /bridge/inbound` entrada generica de eventos para o hub
+- `POST /bridge/outgoing` saida generica do hub para Chatwoot ou Evolution
+- `POST /webhook/chatwoot` alias de entrada para eventos do Chatwoot
+- `POST /webhook/evolution` alias de entrada para eventos do Evolution
 - `POST /webhooks/garcom_digital` webhook dedicado ao garcom
 - `POST /webhook` alias simples para o mesmo fluxo
 - `POST /bridge/chatwoot/outgoing` envio interno do garcom para Chatwoot via fast_api
+- `POST /bridge/evolution/outgoing` envio interno do hub para Evolution via fast_api
 
 Mensagens (CRUD completo):
 
@@ -46,5 +53,8 @@ Mensagens (CRUD completo):
 - Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino.
 - Eventos `message_created` com `message_type=outgoing` (ou sender `agent/bot`) sao ignorados para evitar loop de webhook.
 - O fluxo recomendado fica:
-  - `Chatwoot -> fast_api -> garcom_digital` (entrada de mensagem)
-  - `garcom_digital -> fast_api -> Chatwoot` (saida de mensagem)
+  - `Chatwoot/Evolution -> fast_api -> garcom_digital` (entrada de mensagem)
+  - `garcom_digital -> fast_api -> Chatwoot/Evolution` (saida de mensagem)
+- Se quiser mais clareza operacional, use:
+  - `POST /webhook/chatwoot` para webhooks do Chatwoot
+  - `POST /webhook/evolution` para webhooks do Evolution
