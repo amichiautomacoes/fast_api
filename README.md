@@ -2,6 +2,11 @@
 
 API central para webhooks e mensagens, preparada para EasyPanel e dedicada ao `garcom_digital`.
 
+Regra simples:
+
+- `Webhook = entrada`, começo do fluxo.
+- `Response API = saída`, faz o `HTTP POST` para o Chatwoot no Stage07.
+
 ## Variaveis de ambiente
 
 - `PORT` (opcional, padrao `8000`)
@@ -19,7 +24,7 @@ API central para webhooks e mensagens, preparada para EasyPanel e dedicada ao `g
 
 Exemplo:
 
-- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL=https://SEU_GARCOM/api/v1/webhook`
+- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL=https://SEU_GARCOM/webhooks/garcom_digital`
 - `CHATWOOT_BASE_URL=https://SEU_CHATWOOT`
 - `CHATWOOT_ACCOUNT_ID=1`
 - `CHATWOOT_API_ACCESS_TOKEN=...`
@@ -34,7 +39,7 @@ Exemplo:
 - `POST /webhook/evolution` alias de entrada para eventos do Evolution
 - `POST /webhooks/garcom_digital` webhook dedicado ao garcom
 - `POST /webhook` alias simples para o mesmo fluxo
-- `POST /bridge/chatwoot/outgoing` envio interno do garcom para Chatwoot via fast_api
+- `POST /bridge/chatwoot/outgoing` saída do garcom para Chatwoot via fast_api
 - `POST /bridge/evolution/outgoing` envio interno do hub para Evolution via fast_api
 
 Mensagens (CRUD completo):
@@ -50,11 +55,11 @@ Mensagens (CRUD completo):
 
 - Para escalar em muitos workers, use `REDIS_URL` (estado compartilhado).
 - Sem Redis, apenas webhook funciona; endpoints de mensagens retornam `503`.
-- Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino.
+- Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino de entrada do `garcom_digital`.
 - Eventos `message_created` com `message_type=outgoing` (ou sender `agent/bot`) sao ignorados para evitar loop de webhook.
 - O fluxo recomendado fica:
   - `Chatwoot/Evolution -> fast_api -> garcom_digital` (entrada de mensagem)
-  - `garcom_digital -> fast_api -> Chatwoot/Evolution` (saida de mensagem)
+  - `garcom_digital -> fast_api -> Chatwoot` (saída de resposta do Stage07)
 - Se quiser mais clareza operacional, use:
   - `POST /webhook/chatwoot` para webhooks do Chatwoot
   - `POST /webhook/evolution` para webhooks do Evolution
