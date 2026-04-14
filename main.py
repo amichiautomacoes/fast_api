@@ -329,7 +329,6 @@ def _startup() -> None:
     app.state.redis = client
 
 
-@app.get("/")
 async def root() -> dict[str, Any]:
     return {"ok": True, "service": "webhook-hub", "version": app.version}
 
@@ -426,7 +425,6 @@ def _handle_inbound_payload(
     }
 
 
-@app.post("/bridge/inbound")
 async def bridge_inbound(request: Request, source: str = Query(default="auto")) -> dict[str, Any]:
     payload = await request.json()
     webhook_id = _new_id("whk")
@@ -438,7 +436,6 @@ async def bridge_inbound(request: Request, source: str = Query(default="auto")) 
     )
 
 
-@app.post("/webhooks/garcom_digital")
 async def garcom_webhook(request: Request) -> dict[str, Any]:
     payload = await request.json()
     webhook_id = _new_id("whk")
@@ -450,7 +447,6 @@ async def garcom_webhook(request: Request) -> dict[str, Any]:
     )
 
 
-@app.post("/webhook")
 async def garcom_webhook_alias(request: Request) -> dict[str, Any]:
     return await garcom_webhook(request)
 
@@ -467,7 +463,6 @@ async def chatwoot_webhook(request: Request) -> dict[str, Any]:
     )
 
 
-@app.post("/webhook/evolution")
 async def evolution_webhook(request: Request) -> dict[str, Any]:
     payload = await request.json()
     webhook_id = _new_id("whk")
@@ -479,7 +474,6 @@ async def evolution_webhook(request: Request) -> dict[str, Any]:
     )
 
 
-@app.post("/bridge/outgoing")
 async def bridge_outgoing(body: dict[str, Any]) -> dict[str, Any]:
     destination = str(body.get("destination") or "chatwoot").strip().lower()
     content = str(body.get("content") or "").strip()
@@ -531,7 +525,6 @@ async def bridge_outgoing(body: dict[str, Any]) -> dict[str, Any]:
     raise HTTPException(status_code=422, detail="destination must be 'chatwoot' or 'evolution'")
 
 
-@app.post("/bridge/chatwoot/outgoing")
 async def bridge_chatwoot_outgoing(body: ChatwootOutgoing) -> dict[str, Any]:
     return await bridge_outgoing(
         {
@@ -544,7 +537,6 @@ async def bridge_chatwoot_outgoing(body: ChatwootOutgoing) -> dict[str, Any]:
     )
 
 
-@app.post("/bridge/evolution/outgoing")
 async def bridge_evolution_outgoing(body: EvolutionOutgoing) -> dict[str, Any]:
     return await bridge_outgoing(
         {
@@ -560,7 +552,6 @@ async def bridge_evolution_outgoing(body: EvolutionOutgoing) -> dict[str, Any]:
     )
 
 
-@app.post("/messages")
 async def create_message(body: MessageCreate, request: Request) -> dict[str, Any]:
     client = _require_redis(request)
     now = _now_iso()
@@ -578,7 +569,6 @@ async def create_message(body: MessageCreate, request: Request) -> dict[str, Any
     return doc
 
 
-@app.get("/messages")
 async def list_messages(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
@@ -590,13 +580,11 @@ async def list_messages(
     return {"items": items, "count": len(items), "limit": limit, "offset": offset}
 
 
-@app.get("/messages/{message_id}")
 async def get_message(message_id: str, request: Request) -> dict[str, Any]:
     client = _require_redis(request)
     return _read_message(client, message_id)
 
 
-@app.put("/messages/{message_id}")
 async def replace_message(message_id: str, body: MessageReplace, request: Request) -> dict[str, Any]:
     client = _require_redis(request)
     current = _read_message(client, message_id)
@@ -615,7 +603,6 @@ async def replace_message(message_id: str, body: MessageReplace, request: Reques
     return doc
 
 
-@app.patch("/messages/{message_id}")
 async def patch_message(message_id: str, body: MessagePatch, request: Request) -> dict[str, Any]:
     client = _require_redis(request)
     doc = _read_message(client, message_id)
@@ -628,7 +615,6 @@ async def patch_message(message_id: str, body: MessagePatch, request: Request) -
     return doc
 
 
-@app.delete("/messages/{message_id}")
 async def delete_message(message_id: str, request: Request) -> dict[str, Any]:
     client = _require_redis(request)
     exists = client.exists(_message_key(message_id))

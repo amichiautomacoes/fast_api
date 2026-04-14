@@ -1,11 +1,11 @@
-# fast_api
+﻿# fast_api
 
-API central para webhooks e mensagens, preparada para EasyPanel e dedicada ao `garcom_digital`.
+API central para webhook de entrada e health, preparada para EasyPanel e dedicada ao `garcom_digital`.
 
 Regra simples:
 
-- `Webhook = entrada`, começo do fluxo.
-- `Response API = saída`, faz o `HTTP POST` para o Chatwoot no Stage07.
+- `Webhook = entrada`, comeco do fluxo.
+- `Response API = saida`, faz o `HTTP POST` direto para a API do Chatwoot no Stage07.
 
 ## Variaveis de ambiente
 
@@ -16,50 +16,21 @@ Regra simples:
 - `WEBHOOK_EVENTS_MAXLEN` (opcional, padrao `1000`)
 - `FORWARD_WEBHOOK_TIMEOUT_SECONDS` (opcional, padrao `10`)
 - `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` (opcional): URL do garcom_digital para encaminhamento
-- `CHATWOOT_BASE_URL` (obrigatoria para outbound)
-- `CHATWOOT_ACCOUNT_ID` (obrigatoria para outbound)
-- `CHATWOOT_API_ACCESS_TOKEN` (obrigatoria para outbound)
-- `EVOLUTION_BASE_URL` (obrigatoria para outbound Evolution)
-- `EVOLUTION_API_KEY` (obrigatoria para outbound Evolution)
 
 Exemplo:
 
-- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL=https://SEU_GARCOM/webhooks/garcom_digital`
-- `CHATWOOT_BASE_URL=https://SEU_CHATWOOT`
-- `CHATWOOT_ACCOUNT_ID=1`
-- `CHATWOOT_API_ACCESS_TOKEN=...`
+- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL=https://SEU_GARCOM/webhook/chatwoot`
 
 ## Endpoints
 
-- `GET /` status basico do servico
 - `GET /health` health check + status do Redis
-- `POST /bridge/inbound` entrada generica de eventos para o hub
-- `POST /bridge/outgoing` saida generica do hub para Chatwoot ou Evolution
-- `POST /webhook/chatwoot` alias de entrada para eventos do Chatwoot
-- `POST /webhook/evolution` alias de entrada para eventos do Evolution
-- `POST /webhooks/garcom_digital` webhook dedicado ao garcom
-- `POST /webhook` alias simples para o mesmo fluxo
-- `POST /bridge/chatwoot/outgoing` saída do garcom para Chatwoot via fast_api
-- `POST /bridge/evolution/outgoing` envio interno do hub para Evolution via fast_api
-
-Mensagens (CRUD completo):
-
-- `POST /messages`
-- `GET /messages`
-- `GET /messages/{message_id}`
-- `PUT /messages/{message_id}`
-- `PATCH /messages/{message_id}`
-- `DELETE /messages/{message_id}`
+- `POST /webhook/chatwoot`
 
 ## Observacoes
 
 - Para escalar em muitos workers, use `REDIS_URL` (estado compartilhado).
-- Sem Redis, apenas webhook funciona; endpoints de mensagens retornam `503`.
+- Sem Redis, apenas webhook funciona; endpoints de mensagens foram removidos.
 - Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino de entrada do `garcom_digital`.
-- Eventos `message_created` com `message_type=outgoing` (ou sender `agent/bot`) sao ignorados para evitar loop de webhook.
-- O fluxo recomendado fica:
-  - `Chatwoot/Evolution -> fast_api -> garcom_digital` (entrada de mensagem)
-  - `garcom_digital -> fast_api -> Chatwoot` (saída de resposta do Stage07)
-- Se quiser mais clareza operacional, use:
-  - `POST /webhook/chatwoot` para webhooks do Chatwoot
-  - `POST /webhook/evolution` para webhooks do Evolution
+- O fluxo fica:
+  - `Chatwoot -> fast_api -> garcom_digital`
+  - `garcom_digital -> Chatwoot API` no Stage07
