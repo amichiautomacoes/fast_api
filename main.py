@@ -214,6 +214,9 @@ def _validate_project_token(
     x_webhook_token: str | None,
 ) -> None:
     require_token = _bool_env("WEBHOOK_REQUIRE_TOKEN", True)
+    if not require_token:
+        return
+
     per_project_tokens = _load_project_tokens()
     global_token = (os.getenv("WEBHOOK_GLOBAL_TOKEN") or "").strip()
 
