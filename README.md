@@ -1,36 +1,89 @@
-﻿# fast_api
+# fast_api
 
-API central para webhook de entrada e health, preparada para EasyPanel e dedicada ao `garcom_digital`.
+Servico independente de webhook hub para multiplos projetos.
 
-Regra simples:
+Objetivo:
 
-- `Webhook = entrada`, comeco do fluxo.
-- `Response API = saida`, faz o `HTTP POST` direto para a API do Chatwoot no Stage07.
+- Receber webhooks (`POST` + JSON).
+- Validar autenticacao por token por projeto.
+- Encaminhar payload para destinos configurados por projeto/fonte.
+- Manter compatibilidade com rotas legadas (`/rd/entrada`, `/webhook/chatwoot`).
+
+## Endpoints
+
+- `GET /` status basico
+- `GET /health` health + status Redis
+- `GET /ready` readiness (sempre `200`)
+- `POST /v1/webhooks/{project}/{source}` endpoint generico recomendado
+- `POST /rd/entrada` alias compativel para RD Station
+- `POST /webhook/chatwoot` alias compativel para Chatwoot
 
 ## Variaveis de ambiente
+
+Infra:
 
 - `PORT` (opcional, padrao `8000`)
 - `WEB_CONCURRENCY` (opcional, padrao `4`)
 - `WEB_TIMEOUT` (opcional, padrao `120`)
-- `REDIS_URL` (recomendado para producao, ex: `redis://:SENHA@redis:6379/0`)
+- `REDIS_URL` (opcional, recomendado para producao)
 - `WEBHOOK_EVENTS_MAXLEN` (opcional, padrao `1000`)
+
+Seguranca:
+
+- `WEBHOOK_REQUIRE_TOKEN` (opcional, padrao `true`)
+- `WEBHOOK_GLOBAL_TOKEN` (opcional, fallback para qualquer projeto sem token dedicado)
+- `WEBHOOK_PROJECT_TOKENS_JSON` (recomendado)
+- `WEBHOOK_PROJECT_TOKENS` (formato alternativo CSV: `projeto:token,projeto2:token2`)
+
+Roteamento de encaminhamento:
+
 - `FORWARD_WEBHOOK_TIMEOUT_SECONDS` (opcional, padrao `10`)
-- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` (opcional): URL do garcom_digital para encaminhamento
+- `FORWARD_ROUTES_JSON` (recomendado)
+- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` (compatibilidade legado)
 
-Exemplo:
+Compatibilidade de aliases:
 
-- `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL=https://SEU_GARCOM/webhook/chatwoot`
+- `DEFAULT_PROJECT` (para `/rd/entrada`, padrao `default`)
+- `CHATWOOT_DEFAULT_PROJECT` (para `/webhook/chatwoot`, padrao `garcom_digital`)
 
-## Endpoints
+## Exemplo de configuracao
 
-- `GET /health` health check + status do Redis
-- `POST /webhook/chatwoot`
+```env
+WEBHOOK_REQUIRE_TOKEN=true
+WEBHOOK_PROJECT_TOKENS_JSON={"novauniao":"tok_nova","garcom_digital":"tok_garcom"}
+FORWARD_ROUTES_JSON={
+  "novauniao:rd_station":"https://seu-pipeline-novauniao/webhook/rd",
+  "garcom_digital:chatwoot":"https://seu-garcom/webhook/chatwoot",
+  "default:default":"https://seu-destino-padrao/webhook"
+}
+REDIS_URL=redis://:SENHA@redis:6379/0
+```
 
-## Observacoes
+## Como chamar
 
-- Para escalar em muitos workers, use `REDIS_URL` (estado compartilhado).
-- Sem Redis, apenas webhook funciona; endpoints de mensagens foram removidos.
-- Se `FORWARD_WEBHOOK_URL_GARCOM_DIGITAL` estiver definido, o payload recebido e encaminhado ao destino de entrada do `garcom_digital`.
-- O fluxo fica:
-  - `Chatwoot -> fast_api -> garcom_digital`
-  - `garcom_digital -> Chatwoot API` no Stage07
+Rota generica:
+
+```bash
+curl -X POST "https://api.seudominio.com/v1/webhooks/novauniao/rd_station" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tok_nova" \
+  -d '{"lead":{"email":"teste@dominio.com"}}'
+```
+
+Alias RD:
+
+```bash
+curl -X POST "https://api.seudominio.com/rd/entrada" \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: tok_nova" \
+  -d '{"event_type":"conversion","lead":{"email":"teste@dominio.com"}}'
+```
+
+## Deploy (Easypanel)
+
+1. Criar app apontando para este repositorio.
+2. Build usando `Dockerfile` da raiz.
+3. Definir variaveis de ambiente.
+4. Publicar dominio com HTTPS.
+5. Validar `GET /health` e depois testar `POST /v1/webhooks/{project}/{source}`.
+
