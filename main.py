@@ -33,6 +33,14 @@ def _event_maxlen() -> int:
         return 1000
 
 
+def _pull_max_limit() -> int:
+    raw = os.getenv("INBOX_PULL_MAX_LIMIT", "500").strip()
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 500
+
+
 def _forward_timeout_seconds() -> float:
     raw = os.getenv("FORWARD_WEBHOOK_TIMEOUT_SECONDS", "10").strip()
     try:
@@ -282,6 +290,17 @@ def _store_event(
     pipe.execute()
 
 
+def _require_redis(request: Request) -> redis.Redis:
+    client = getattr(request.app.state, "redis", None)
+    if not client:
+        raise HTTPException(status_code=503, detail="REDIS_URL not configured or Redis unavailable")
+    return client
+
+
+def _events_key(project: str, source: str) -> str:
+    return f"wh:webhooks:{project}:{source}"
+
+
 async def _handle_webhook(
     *,
     request: Request,
@@ -378,3 +397,56 @@ async def chatwoot_webhook(
         authorization=authorization,
         x_webhook_token=x_webhook_token,
     )
+
+
+@app.post("/v1/inbox/{project}/{source}/pull")
+async def pull_webhook_events(
+    project: str,
+    source: str,
+    request: Request,
+    limit: int = 50,
+    authorization: str | None = Header(default=None),
+    x_webhook_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    normalized_project = _normalize_project(project)
+    normalized_source = _normalize_project(source)
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail="Invalid project")
+    if not normalized_source:
+        raise HTTPException(status_code=422, detail="Invalid source")
+
+    _validate_project_token(normalized_project, authorization, x_webhook_token)
+    client = _require_redis(request)
+
+    safe_limit = max(1, min(int(limit), _pull_max_limit()))
+    key = _events_key(normalized_project, normalized_source)
+
+    # Consume events from Redis queue (FIFO for oldest first in returned payload).
+    raw_items = client.lpop(key, safe_limit)
+    if raw_items is None:
+        raw_list: list[str] = []
+    elif isinstance(raw_items, list):
+        raw_list = [str(item) for item in raw_items]
+    else:
+        raw_list = [str(raw_items)]
+
+    events: list[dict[str, Any]] = []
+    for item in raw_list:
+        try:
+            parsed = json.loads(item)
+            if isinstance(parsed, dict):
+                events.append(parsed)
+        except json.JSONDecodeError:
+            continue
+
+    # Reverse so consumers process in chronological order.
+    events.reverse()
+    remaining = client.llen(key)
+    return {
+        "ok": True,
+        "project": normalized_project,
+        "source": normalized_source,
+        "pulled": len(events),
+        "remaining": int(remaining),
+        "events": events,
+    }

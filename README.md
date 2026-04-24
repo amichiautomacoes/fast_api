@@ -15,6 +15,7 @@ Objetivo:
 - `GET /health` health + status Redis
 - `GET /ready` readiness (sempre `200`)
 - `POST /v1/webhooks/{project}/{source}` endpoint generico recomendado
+- `POST /v1/inbox/{project}/{source}/pull` consome eventos da fila Redis
 - `POST /rd/entrada` alias compativel para RD Station
 - `POST /webhook/chatwoot` alias compativel para Chatwoot
 
@@ -27,6 +28,7 @@ Infra:
 - `WEB_TIMEOUT` (opcional, padrao `120`)
 - `REDIS_URL` (opcional, recomendado para producao)
 - `WEBHOOK_EVENTS_MAXLEN` (opcional, padrao `1000`)
+- `INBOX_PULL_MAX_LIMIT` (opcional, padrao `500`)
 
 Seguranca:
 
@@ -70,6 +72,13 @@ curl -X POST "https://api.seudominio.com/v1/webhooks/novauniao/rd_station" \
   -d '{"lead":{"email":"teste@dominio.com"}}'
 ```
 
+Consumir eventos recebidos (do seu PC local):
+
+```bash
+curl -X POST "https://api.seudominio.com/v1/inbox/novauniao/rd_station/pull?limit=50" \
+  -H "Authorization: Bearer tok_nova"
+```
+
 Alias RD:
 
 ```bash
@@ -86,4 +95,3 @@ curl -X POST "https://api.seudominio.com/rd/entrada" \
 3. Definir variaveis de ambiente.
 4. Publicar dominio com HTTPS.
 5. Validar `GET /health` e depois testar `POST /v1/webhooks/{project}/{source}`.
-
